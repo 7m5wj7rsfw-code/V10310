@@ -30,13 +30,57 @@ wow-image, wix-image { display: block; }
  font: 32px Arial, sans-serif; cursor: pointer; color: black;
 }
 :focus-visible { outline: 2px solid #9e7727 !important; outline-offset: 4px; }
+
+/* Fixed header: a spacer preserves the exact original page layout. */
+#masterPage.mesh-layout #SITE_HEADER.copy-floating-header {
+ position: fixed !important; top: 0 !important; left: 0 !important;
+ width: calc(100% - var(--scrollbar-width, 0px)) !important;
+ margin-left: 0 !important; z-index: 10000;
+ background: #fff; transform: translateY(0);
+ transition: transform 220ms ease, box-shadow 220ms ease;
+}
+#masterPage.mesh-layout #SITE_HEADER.copy-header-hidden {
+ transform: translateY(calc(-100% - 2px)); pointer-events: none;
+}
+#masterPage.mesh-layout #SITE_HEADER.copy-floating-header.copy-header-keyboard-focus {
+ transform: translateY(0); pointer-events: auto;
+}
+#SITE_HEADER.copy-header-scrolled { box-shadow: 0 3px 14px rgba(0, 0, 0, .06); }
+#masterPage.mesh-layout > .copy-header-spacer {
+ grid-area: 1 / 1 / 2 / 2; width: 100%; pointer-events: none;
+ height: var(--copy-header-height, var(--header-height, 198px));
+}
+[id] { scroll-margin-top: calc(var(--copy-header-height, 198px) + 12px); }
+
+/* Brief fade and a 6px movement between pages; the header stays steady. */
+body.copy-page-leaving #PAGES_CONTAINER,
+body.copy-page-leaving #SITE_FOOTER {
+ opacity: 0; transform: translateY(-4px);
+ transition: opacity 120ms ease, transform 120ms ease;
+ pointer-events: none;
+}
+body.copy-page-entering #PAGES_CONTAINER,
+body.copy-page-entering #SITE_FOOTER {
+ animation: copy-page-in 240ms ease-out both;
+}
+@keyframes copy-page-in {
+ from { opacity: 0; transform: translateY(6px); }
+ to { opacity: 1; transform: translateY(0); }
+}
 @media (max-width: 768px) {
  .copy-mobile-loading body > #SITE_CONTAINER { visibility: hidden; }
  .copy-rdv { display: none; }
+ body.device-mobile-optimized #masterPage.mesh-layout #SITE_HEADER.copy-floating-header {
+  left: 50% !important; width: 320px !important; margin-left: -160px !important;
+ }
 }
 @media (prefers-reduced-motion: reduce) {
  html { scroll-behavior: auto; }
  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+ body.copy-page-leaving #PAGES_CONTAINER,
+ body.copy-page-leaving #SITE_FOOTER { opacity: 1; transform: none; }
+ body.copy-page-entering #PAGES_CONTAINER,
+ body.copy-page-entering #SITE_FOOTER { animation: none; }
 }
 </style>
 </head>
@@ -20053,6 +20097,7 @@ body.device-mobile-optimized .Ak0vpt>*,:host(.device-mobile-optimized) .Ak0vpt>*
 (() => {
  'use strict';
  const mobile = matchMedia('(max-width:768px)');
+ const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)');
  const dataNode = document.getElementById('copy-data');
  const standalone = Boolean(dataNode);
  const pages = standalone ? JSON.parse(dataNode.textContent) : null;
@@ -20060,6 +20105,108 @@ body.device-mobile-optimized .Ak0vpt>*,:host(.device-mobile-optimized) .Ak0vpt>*
  let currentPage = null;
  let timers = [];
  let cleanup = [];
+ let navigationTimer = null;
+
+ function cancelNavigation() {
+  clearTimeout(navigationTimer); navigationTimer = null;
+  document.body.classList.remove('copy-page-leaving');
+ }
+
+ function enterPage() {
+  document.body.classList.remove('copy-page-leaving');
+  if (!reducedMotion.matches) document.body.classList.add('copy-page-entering');
+ }
+
+ function transitionTo(commit) {
+  cancelNavigation();
+  document.body.classList.remove('copy-page-entering');
+  if (reducedMotion.matches) { commit(); return; }
+  document.body.classList.add('copy-page-leaving');
+  navigationTimer = setTimeout(() => {
+   navigationTimer = null;
+   commit();
+   // Separate-file navigation finishes on the next document's pageshow event.
+   if (standalone) enterPage();
+  }, 140);
+ }
+
+ function initialiseHeader() {
+  const header = document.getElementById('SITE_HEADER');
+  if (!header) return;
+  const spacer = document.createElement('div');
+  spacer.className = 'copy-header-spacer'; spacer.setAttribute('aria-hidden','true');
+  header.before(spacer);
+  const fallbackHeight = mobile.matches ? 98 : 198;
+  let height = header.getBoundingClientRect().height || fallbackHeight;
+  function measure() {
+   height = header.getBoundingClientRect().height || fallbackHeight;
+   spacer.style.height = height+'px';
+   document.body.style.setProperty('--copy-header-height',height+'px');
+  }
+  measure();
+  header.classList.add('copy-floating-header');
+  function getScrollY() {
+   const max = Math.max(0,document.documentElement.scrollHeight-innerHeight);
+   return Math.min(max,Math.max(0,scrollY));
+  }
+  let lastY = getScrollY();
+  let distance = 0;
+  let direction = 0;
+  let frame = null;
+  let usingKeyboard = false;
+  function reveal() { header.classList.remove('copy-header-hidden'); }
+  function onKeyDown(e) {
+   if(e.key==='Tab') {
+    usingKeyboard=true;
+    if(header.contains(document.activeElement)) { header.classList.add('copy-header-keyboard-focus'); reveal(); }
+   }
+  }
+  function onPointerDown() {
+   usingKeyboard=false; header.classList.remove('copy-header-keyboard-focus');
+  }
+  function onFocusIn() {
+   reveal(); header.classList.toggle('copy-header-keyboard-focus',usingKeyboard);
+  }
+  function onFocusOut(e) {
+   if(!header.contains(e.relatedTarget))header.classList.remove('copy-header-keyboard-focus');
+  }
+  function update() {
+   frame = null;
+   const y = getScrollY();
+   const delta = y-lastY;
+   lastY = y;
+   header.classList.toggle('copy-header-scrolled',y>20);
+   const menuOpen = document.getElementById('MENU_AS_CONTAINER')?.classList.contains('copy-menu-open');
+   if (y<=20 || menuOpen || (usingKeyboard && header.contains(document.activeElement))) {
+    reveal(); distance=0; direction=0; return;
+   }
+   if (!delta) return;
+   const nextDirection = Math.sign(delta);
+   distance = nextDirection===direction ? distance+Math.abs(delta) : Math.abs(delta);
+   direction = nextDirection;
+   if (direction>0 && y>height+16 && distance>=12) {
+    header.classList.add('copy-header-hidden'); distance=0;
+   } else if (direction<0 && distance>=6) {
+    reveal(); distance=0;
+   }
+  }
+  function onScroll() { if (frame===null) frame=requestAnimationFrame(update); }
+  addEventListener('scroll',onScroll,{passive:true});
+  addEventListener('resize',measure);
+  header.addEventListener('focusin',onFocusIn);
+  header.addEventListener('focusout',onFocusOut);
+  document.addEventListener('keydown',onKeyDown);
+  document.addEventListener('pointerdown',onPointerDown);
+  const observer = typeof ResizeObserver==='function' ? new ResizeObserver(measure) : null;
+  observer?.observe(header);
+  cleanup.push(() => {
+   removeEventListener('scroll',onScroll); removeEventListener('resize',measure);
+   header.removeEventListener('focusin',onFocusIn); header.removeEventListener('focusout',onFocusOut);
+   document.removeEventListener('keydown',onKeyDown); document.removeEventListener('pointerdown',onPointerDown);
+   if (frame!==null) cancelAnimationFrame(frame);
+   observer?.disconnect(); spacer.remove();
+  });
+ }
 
  function hydrate(fragment) {
   if (!standalone) return;
@@ -20076,6 +20223,7 @@ body.device-mobile-optimized .Ak0vpt>*,:host(.device-mobile-optimized) .Ak0vpt>*
 
  function initialise() {
   document.body.style.setProperty('--scrollbar-width', Math.max(0,innerWidth-document.documentElement.clientWidth)+'px');
+  initialiseHeader();
   document.querySelectorAll('.wixui-slideshow').forEach(slideshow => {
    const slides = [...slideshow.querySelectorAll('[data-copy-slide]')];
    if (slides.length < 2) return;
@@ -20182,25 +20330,50 @@ body.device-mobile-optimized .Ak0vpt>*,:host(.device-mobile-optimized) .Ak0vpt>*
   // The original Wix mobile composition uses a 320px viewport.
   document.querySelector('meta[name="viewport"]').content=mobile.matches?'width=320, user-scalable=yes':'width=device-width, initial-scale=1';
   document.documentElement.classList.remove('copy-mobile-loading');
-  initialise();
   if(resetScroll&&!location.hash) scrollTo({top:0,left:0,behavior:'auto'});
+  initialise();
  }
 
  if(standalone) {
   document.addEventListener('click',e=>{
    const a=e.target.closest('a[href]');
-   if(!a||e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||a.target==='_blank')return;
+   if(!a||e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||a.hasAttribute('download')||(a.target && a.target!=='_self'))return;
    const href=a.getAttribute('href');
    if(!href.startsWith('?page='))return;
-   e.preventDefault();
    const url=new URL(href,location.href);
    const page=url.searchParams.get('page');
    if(!Object.hasOwn(pages,page))return;
-   history.pushState({},'',url);
-   if(page!==currentPage)render(true);else scrollToHash();
+   e.preventDefault();
+   if(page!==currentPage) {
+    transitionTo(()=>{history.pushState({},'',url);render(true);});
+   } else {
+    cancelNavigation();
+    history.pushState({},'',url);
+    if(location.hash)scrollToHash();else scrollTo({top:0,left:0,behavior:reducedMotion.matches?'auto':'smooth'});
+   }
   });
-  addEventListener('popstate',()=>render(true));
+  addEventListener('popstate',()=>{cancelNavigation();render(true);enterPage();});
+ } else {
+  // Preserve standard links and modifier-clicks in the separate-file version.
+  document.addEventListener('click',e=>{
+   const a=e.target.closest('a[href]');
+   if(!a||e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||a.hasAttribute('download')||(a.target && a.target!=='_self'))return;
+   const url=new URL(a.getAttribute('href'),location.href);
+   const current=new URL(location.href);
+   if(url.origin!==current.origin||url.pathname===current.pathname)return;
+   if(!/\/(index|qui-suis-je|accompagnement|ateliers|ressources|contact)\.html$/.test(url.pathname))return;
+   e.preventDefault();
+   transitionTo(()=>location.assign(url.href));
+  });
+  addEventListener('pageshow',()=>{
+   cancelNavigation();
+   document.getElementById('SITE_HEADER')?.classList.remove('copy-header-hidden');
+   enterPage();
+  });
  }
+ document.addEventListener('animationend',e=>{
+  if(e.animationName==='copy-page-in' && e.target.id==='PAGES_CONTAINER')document.body.classList.remove('copy-page-entering');
+ });
  addEventListener('hashchange',scrollToHash);
  // Listen to physical window width, avoiding a reload loop from the 320px meta viewport.
  let lastWidth=outerWidth;
@@ -20212,6 +20385,7 @@ body.device-mobile-optimized .Ak0vpt>*,:host(.device-mobile-optimized) .Ak0vpt>*
   if(now!==was){if(standalone)render();else location.reload();}
  });
  render();
+ enterPage();
 })();
 
 </script>
